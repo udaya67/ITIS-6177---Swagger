@@ -137,7 +137,7 @@ app.get("/students", async (req, res) => {
   }
 });
 
-**
+/**
  * @swagger
  * /orders:
  *   post:
@@ -178,7 +178,7 @@ app.get("/students", async (req, res) => {
  *     responses:
  *       201:
  *         description: Order created successfully
-*         content:
+ *         content:
  *           application/json:
  *             schema:
  *               type: object
@@ -210,9 +210,15 @@ app.post(
     try {
       conn = await pool.getConnection();
 
-      // Generate next ORD_NUM
+      // Generate next ORD_NUM safely
       const result = await conn.query("SELECT MAX(ORD_NUM) AS maxNum FROM orders");
-      const newOrderNum = (result[0].maxNum || 0) + 1;
+      let maxNum = result[0].maxNum ? Number(result[0].maxNum) : 0;
+      let newOrderNum = maxNum + 1;
+
+      // Check if ORD_NUM exceeds 6 digits
+      if (newOrderNum > 999999) {
+        return res.status(400).json({ error: "ORD_NUM exceeds max allowed value (999999)" });
+      }
 
       // Insert new order
       await conn.query(
@@ -225,7 +231,7 @@ app.post(
           req.body.CUST_CODE,
           req.body.AGENT_CODE,
           req.body.ORD_DESCRIPTION,
-                  ]
+        ]
       );
 
       res.status(201).json({ message: "Order created successfully", ORD_NUM: newOrderNum });
@@ -286,40 +292,51 @@ app.post(
  *       500:
  *         description: Server error
  */
-app.put(
-  "/orders/:ORD_NUM",
-  [
-    param("ORD_NUM").isInt(),
-    body("ORD_AMOUNT").isDecimal(),
-    body("ADVANCE_AMOUNT").isDecimal(),
-    body("ORD_DATE").isISO8601(),
-    body("CUST_CODE").isString().trim().escape(),
-    body("AGENT_CODE").isString().trim().escape(),
-    body("ORD_DESCRIPTION").isString().trim().escape(),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+app.put("/orders/:ORD_NUM", [
+  param("ORD_NUM").isInt().withMessage("ORD_NUM must be an integer"),
+  body("ORD_AMOUNT").isFloat({ min: 0 }).withMessage("ORD_AMOUNT must be a positive number"),
+  body("ADVANCE_AMOUNT").isFloat({ min: 0 }).withMessage("ADVANCE_AMOUNT must be a positive number"),
+  body("ORD_DATE").isDate().withMessage("ORD_DATE must be a valid date"),
+  body("CUST_CODE").notEmpty().withMessage("CUST_CODE is required").trim(),
+  body("AGENT_CODE").notEmpty().withMessage("AGENT_CODE is required").trim(),
+  body("ORD_DESCRIPTION").notEmpty().withMessage("ORD_DESCRIPTION is required").trim(),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    let conn;
-    const { ORD_NUM } = req.params;
-    const { ORD_AMOUNT, ADVANCE_AMOUNT, ORD_DATE, CUST_CODE, AGENT_CODE, ORD_DESCRIPTION } = req.body;
+  const { ORD_NUM } = req.params;
+  const { ORD_AMOUNT, ADVANCE_AMOUNT, ORD_DATE, CUST_CODE, AGENT_CODE, ORD_DESCRIPTION } = req.body;
 
-    try {
-      conn = await pool.getConnection();
-      const result = await conn.query(
-        "UPDATE orders SET ORD_AMOUNT=?, ADVANCE_AMOUNT=?, ORD_DATE=?, CUST_CODE=?, AGENT_CODE=?, ORD_DESCRIPTION=? WHERE ORD_NUM=?",
-        [ORD_AMOUNT, ADVANCE_AMOUNT, ORD_DATE, CUST_CODE, AGENT_CODE, ORD_DESCRIPTION, ORD_NUM]
+  let conn;
+  try {
+    conn = await pool.getConnection();
+
+    // Check if order exists
+    const rows = await conn.query("SELECT * FROM orders WHERE ORD_NUM=?", [ORD_NUM]);
+
+    if (rows.length === 0) {
+      // Order not found → create new
+      await conn.query(
+        "INSERT INTO orders (ORD_NUM, ORD_AMOUNT, ADVANCE_AMOUNT, ORD_DATE, CUST_CODE, AGENT_CODE, ORD_DESCRIPTION) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [ORD_NUM, ORD_AMOUNT, ADVANCE_AMOUNT, ORD_DATE, CUST_CODE, AGENT_CODE, ORD_DESCRIPTION]
       );
-      if (result.affectedRows === 0) return res.status(404).json({ message: "Order not found" });
-      res.json({ message: "Order updated", ORD_NUM });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    } finally {
-      if (conn) conn.release();
+      return res.status(201).json({ message: "Order created successfully", ORD_NUM });
     }
+
+    // Order exists → update
+    await conn.query(
+      "UPDATE orders SET ORD_AMOUNT=?, ADVANCE_AMOUNT=?, ORD_DATE=?, CUST_CODE=?, AGENT_CODE=?, ORD_DESCRIPTION=? WHERE ORD_NUM=?",
+      [ORD_AMOUNT, ADVANCE_AMOUNT, ORD_DATE, CUST_CODE, AGENT_CODE, ORD_DESCRIPTION, ORD_NUM]
+    );
+
+    res.json({ message: "Order updated successfully", ORD_NUM });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (conn) conn.release();
   }
-  );
+});
+
 
 /**
  * @swagger
